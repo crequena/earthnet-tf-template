@@ -1,6 +1,17 @@
-tensorflow-gpu>=1.9.0
-opencv-python
+#Make sure the following python dependencies are installed
+
+#General workflow requirements
+numpy
+matplotlib
 scipy
+tensorflow-gpu==1.15
+
+#toy dataset requirements
+mnist
+sk-video
+ffmpeg
+
+#model requirement
+opencv-python
 scikit-image
 h5py
-git+git://github.com/alexlee-gk/lpips-tensorflow.git#egg=lpips-tf

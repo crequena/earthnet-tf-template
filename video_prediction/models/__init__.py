@@ -1,11 +1,8 @@
 from .base_model import BaseVideoPredictionModel
 from .base_model import VideoPredictionModel
 from .non_trainable_model import NonTrainableVideoPredictionModel
-from .non_trainable_model import GroundTruthVideoPredictionModel
-from .non_trainable_model import RepeatVideoPredictionModel
-from .savp_model import SAVPVideoPredictionModel
-from .dna_model import DNAVideoPredictionModel
-from .sna_model import SNAVideoPredictionModel
+from .non_trainable_model import GroundTruthVideoPredictionModel, RepeatVideoPredictionModel
+from .pix2pix_model import Pix2PixVideoPredictionModel
 from .sv2p_model import SV2PVideoPredictionModel
 
 
@@ -13,10 +10,9 @@ def get_model_class(model):
     model_mappings = {
         'ground_truth': 'GroundTruthVideoPredictionModel',
         'repeat': 'RepeatVideoPredictionModel',
-        'savp': 'SAVPVideoPredictionModel',
-        'dna': 'DNAVideoPredictionModel',
-        'sna': 'SNAVideoPredictionModel',
+        'pix2pix': 'Pix2PixVideoPredictionModel',
         'sv2p': 'SV2PVideoPredictionModel',
+        'naive': 'NaiveVideoPredictionModel',
     }
     model_class = model_mappings.get(model, model)
     model_class = globals().get(model_class)

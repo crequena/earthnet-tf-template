@@ -38,14 +38,15 @@ class BaseVideoDataset(object):
 
         if not os.path.exists(self.input_dir):
             raise FileNotFoundError("input_dir %s does not exist" % self.input_dir)
-        self.filenames = None
-        # look for tfrecords in input_dir and input_dir/mode directories
-        for input_dir in [self.input_dir, os.path.join(self.input_dir, self.mode)]:
-            filenames = glob.glob(os.path.join(input_dir, '*.tfrecord*'))
-            if filenames:
-                self.input_dir = input_dir
-                self.filenames = sorted(filenames)  # ensures order is the same across systems
-                break
+        self.filenames = []
+        # look for tfrecords in input_dir and input_dir/sub_dir directories
+        sub_dirs = os.listdir(self.input_dir)
+        sub_dirs.sort()
+        for sub_dir in sub_dirs:
+            for input_dir in [self.input_dir, os.path.join(self.input_dir, sub_dir)]:
+                self.filenames += glob.glob(os.path.join(input_dir, sub_dir,'*.tfrecord*'))
+        self.filenames = sorted(self.filenames)  # ensures order is the same across systems
+        print("{0} samples found in {1} tile directories".format(len(self.filenames), len(sub_dirs)))
         if not self.filenames:
             raise FileNotFoundError('No tfrecords were found in %s.' % self.input_dir)
         self.dataset_name = os.path.basename(os.path.split(self.input_dir)[0])
@@ -68,8 +69,6 @@ class BaseVideoDataset(object):
                 state-like sequences are of length sequence_length and
                 action-like sequences are of length sequence_length - 1.
                 This number includes the context frames.
-            long_sequence_length: the number of frames for the long version.
-                The default is the same as sequence_length.
             frame_skip: number of frames to skip in between outputted frames,
                 so frame_skip=0 denotes no skipping.
             time_shift: shift in time by multiples of this, so time_shift=1
@@ -77,8 +76,6 @@ class BaseVideoDataset(object):
                 It is ignored (equiv. to time_shift=0) when mode != 'train'.
             force_time_shift: whether to do the shift in time regardless of
                 mode.
-            shuffle_on_val: whether to shuffle the samples regardless if mode
-                is 'train' or 'val'. Shuffle never happens when mode is 'test'.
             use_state: whether to load and return state and actions.
         """
         hparams = dict(
@@ -86,11 +83,9 @@ class BaseVideoDataset(object):
             scale_size=0,
             context_frames=1,
             sequence_length=0,
-            long_sequence_length=0,
             frame_skip=0,
             time_shift=1,
             force_time_shift=False,
-            shuffle_on_val=False,
             use_state=False,
         )
         return hparams
@@ -105,8 +100,6 @@ class BaseVideoDataset(object):
                 hparams = [hparams]
             for hparam in hparams:
                 parsed_hparams.parse(hparam)
-        if parsed_hparams.long_sequence_length == 0:
-            parsed_hparams.long_sequence_length = parsed_hparams.sequence_length
         return parsed_hparams
 
     @property
@@ -116,9 +109,6 @@ class BaseVideoDataset(object):
     def set_sequence_length(self, sequence_length):
         self.hparams.sequence_length = sequence_length
 
-    def filter(self, serialized_example):
-        return tf.convert_to_tensor(True)
-
     def parser(self, serialized_example):
         """
         Parses a single tf.train.Example or tf.train.SequenceExample into
@@ -126,36 +116,73 @@ class BaseVideoDataset(object):
         """
         raise NotImplementedError
 
-    def make_dataset(self, batch_size):
+    def make_batch(self, batch_size):
         filenames = self.filenames
-        shuffle = self.mode == 'train' or (self.mode == 'val' and self.hparams.shuffle_on_val)
-        if shuffle:
+        filenames.sort()
+        if self.mode == 'train':
             random.shuffle(filenames)
 
-        dataset = tf.data.TFRecordDataset(filenames, buffer_size=8 * 1024 * 1024)
-        dataset = dataset.filter(self.filter)
-        if shuffle:
-            dataset = dataset.apply(tf.contrib.data.shuffle_and_repeat(buffer_size=1024, count=self.num_epochs))
-        else:
-            dataset = dataset.repeat(self.num_epochs)
+        dataset = tf.data.TFRecordDataset(filenames)
+        dataset = dataset.map(self.parser, num_parallel_calls=batch_size)
+        dataset.prefetch(2 * batch_size)
 
-        def _parser(serialized_example):
-            state_like_seqs, action_like_seqs = self.parser(serialized_example)
-            seqs = OrderedDict(list(state_like_seqs.items()) + list(action_like_seqs.items()))
-            return seqs
+        # Could shuffle individual samples but it becomes too slow. Just shuffle filenames instead.
+#         if self.mode == 'train':
+#             min_queue_examples = int(self.num_examples_per_epoch() * 0.4)
+#             # Ensure that the capacity is sufficiently large to provide good random
+#             # shuffling.
+#             dataset = dataset.shuffle(buffer_size=min_queue_examples + 3 * batch_size)
 
-        num_parallel_calls = None if shuffle else 1  # for reproducibility (e.g. sampled subclips from the test set)
-        dataset = dataset.apply(tf.contrib.data.map_and_batch(
-            _parser, batch_size, drop_remainder=True, num_parallel_calls=num_parallel_calls))
-        dataset = dataset.prefetch(batch_size)
-        return dataset
-
-    def make_batch(self, batch_size):
-        dataset = self.make_dataset(batch_size)
+        dataset = dataset.repeat(self.num_epochs)
+        dataset = dataset.batch(batch_size)
         iterator = dataset.make_one_shot_iterator()
-        return iterator.get_next()
+        state_like_batches, action_like_batches = iterator.get_next()
+
+        input_batches = OrderedDict(list(state_like_batches.items()) + list(action_like_batches.items()))
+        for input_batch in input_batches.values():
+            input_batch.set_shape([batch_size] + [None] * (input_batch.shape.ndims - 1))
+        target_batches = state_like_batches['images'][:, self.hparams.context_frames:]
+        return input_batches, target_batches
 
     def decode_and_preprocess_images(self, image_buffers, image_shape):
+
+        def decode_and_preprocess_image(image_buffer):
+            image_buffer = tf.reshape(image_buffer, [])
+            if self.jpeg_encoding:
+                image = tf.image.decode_jpeg(image_buffer)
+            else:
+                image = tf.decode_raw(image_buffer, tf.float16) ### float16 for Earthnet16
+                image = tf.where(tf.is_nan(image), tf.zeros_like(image), image)
+                
+            image = tf.reshape(image, image_shape)
+            
+            crop_size = self.hparams.crop_size
+            scale_size = self.hparams.scale_size
+            if crop_size or scale_size:
+                if not crop_size:
+                    crop_size = min(image_shape[0], image_shape[1])
+                image = tf.image.resize_image_with_crop_or_pad(image, crop_size, crop_size)
+                image = tf.reshape(image, [crop_size, crop_size, 3])
+                if scale_size:
+                    # upsample with bilinear interpolation but downsample with area interpolation
+                    if crop_size < scale_size:
+                        image = tf.image.resize_images(image, [scale_size, scale_size],
+                                                       method=tf.image.ResizeMethod.BILINEAR)
+                    elif crop_size > scale_size:
+                        image = tf.image.resize_images(image, [scale_size, scale_size],
+                                                       method=tf.image.ResizeMethod.AREA)
+                    else:
+                        # image remains unchanged
+                        pass
+            return image
+
+        if not isinstance(image_buffers, (list, tuple)):
+            image_buffers = tf.unstack(image_buffers)
+        images = [decode_and_preprocess_image(image_buffer) for image_buffer in image_buffers]
+        images = tf.image.convert_image_dtype(images, dtype=tf.float32)
+        return images
+    
+    def decode_and_preprocess_predictors(self, image_buffers, image_shape):
         def decode_and_preprocess_image(image_buffer):
             image_buffer = tf.reshape(image_buffer, [])
             if self.jpeg_encoding:
@@ -169,7 +196,7 @@ class BaseVideoDataset(object):
                 if not crop_size:
                     crop_size = min(image_shape[0], image_shape[1])
                 image = tf.image.resize_image_with_crop_or_pad(image, crop_size, crop_size)
-                image = tf.reshape(image, [crop_size, crop_size, 3])
+                image = tf.reshape(image, [crop_size, crop_size, image_shape[2]])
                 if scale_size:
                     # upsample with bilinear interpolation but downsample with area interpolation
                     if crop_size < scale_size:
@@ -395,6 +422,7 @@ class SequenceExampleVideoDataset(BaseVideoDataset):
         # decode and preprocess images on the sampled slice only
         _, image_shape = self.state_like_names_and_shapes['images']
         state_like_seqs['images'] = self.decode_and_preprocess_images(state_like_seqs['images'], image_shape)
+                                    
         return state_like_seqs, action_like_seqs
 
 
@@ -405,13 +433,6 @@ class VarLenFeatureVideoDataset(BaseVideoDataset):
 
     https://github.com/tensorflow/tensorflow/issues/15977
     """
-    def filter(self, serialized_example):
-        features = dict()
-        features['sequence_length'] = tf.FixedLenFeature((), tf.int64)
-        features = tf.parse_single_example(serialized_example, features=features)
-        example_sequence_length = features['sequence_length']
-        return tf.greater_equal(example_sequence_length, self.hparams.sequence_length)
-
     def parser(self, serialized_example):
         """
         Parses a single tf.train.SequenceExample into images, states, actions, etc tensors.
@@ -419,7 +440,7 @@ class VarLenFeatureVideoDataset(BaseVideoDataset):
         features = dict()
         features['sequence_length'] = tf.FixedLenFeature((), tf.int64)
         for example_name, (name, shape) in self.state_like_names_and_shapes.items():
-            if example_name == 'images':
+            if example_name == 'images' or example_name == 'predictors':
                 features[name] = tf.VarLenFeature(tf.string)
             else:
                 features[name] = tf.VarLenFeature(tf.float32)
@@ -433,7 +454,7 @@ class VarLenFeatureVideoDataset(BaseVideoDataset):
         state_like_seqs = OrderedDict()
         action_like_seqs = OrderedDict()
         for example_name, (name, shape) in self.state_like_names_and_shapes.items():
-            if example_name == 'images':
+            if example_name == 'images' or example_name == 'predictors':
                 seq = tf.sparse_tensor_to_dense(features[name], '')
             else:
                 seq = tf.sparse_tensor_to_dense(features[name])
@@ -450,6 +471,13 @@ class VarLenFeatureVideoDataset(BaseVideoDataset):
         # decode and preprocess images on the sampled slice only
         _, image_shape = self.state_like_names_and_shapes['images']
         state_like_seqs['images'] = self.decode_and_preprocess_images(state_like_seqs['images'], image_shape)
+        
+        
+        #GOTTA FIX THIS FOR PREDICTORS TO WORK
+        # decode and preprocess predictors on the sampled slice only
+        #_, predictors_shape = self.state_like_names_and_shapes['predictors']
+        #state_like_seqs['predictors'] = self.decode_and_preprocess_predictors(state_like_seqs['predictors'], predictors_shape)
+        
         return state_like_seqs, action_like_seqs
 
 
@@ -458,11 +486,11 @@ if __name__ == '__main__':
     from video_prediction import datasets
 
     datasets = [
+        datasets.GoogleRobotVideoDataset('data/push/push_testseen', mode='test'),
         datasets.SV2PVideoDataset('data/shape', mode='val'),
         datasets.SV2PVideoDataset('data/humans', mode='val'),
-        datasets.SoftmotionVideoDataset('data/bair', mode='val'),
+        datasets.SoftmotionVideoDataset('data/softmotion30_v1', mode='val'),
         datasets.KTHVideoDataset('data/kth', mode='val'),
-        datasets.KTHVideoDataset('data/kth_128', mode='val'),
         datasets.UCF101VideoDataset('data/ucf101', mode='val'),
     ]
     batch_size = 4
@@ -470,15 +498,12 @@ if __name__ == '__main__':
     sess = tf.Session()
 
     for dataset in datasets:
-        inputs = dataset.make_batch(batch_size)
+        inputs, _ = dataset.make_batch(batch_size)
         images = inputs['images']
         images = tf.reshape(images, [-1] + images.get_shape().as_list()[2:])
         images = sess.run(images)
         images = (images * 255).astype(np.uint8)
         for image in images:
-            if image.shape[-1] == 1:
-                image = np.tile(image, [1, 1, 3])
-            else:
-                image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
+            image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
             cv2.imshow(dataset.input_dir, image)
             cv2.waitKey(50)

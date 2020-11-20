@@ -1,26 +1,117 @@
 import tensorflow as tf
+import numpy as np
 
 from video_prediction.ops import sigmoid_kl_with_logits
 
+def l2_loss(pred, target):
+    #Unpack the channels 
+    red, green, blue, nir, _, _, _, _, _, _, _, cloud_mask = tf.unstack(target, axis=4, name='unstack_target')
+    pred_red, pred_green, pred_blue, pred_nir, _, _, _, _, _, _, _, _ = tf.unstack(pred, axis=4, name='unstack_pred')
+
+    tf_zero = tf.constant(0, dtype=tf.float32)
+    
+    #Stack channels
+    cloud_mask = tf.stack([cloud_mask, cloud_mask, cloud_mask, cloud_mask], axis=4, name='stack_cloud_mask')
+    target = tf.stack([red, green, blue, nir], axis=4, name='stack_target')
+    pred = tf.stack([pred_red, pred_green, pred_blue, pred_nir], axis=4, name='stack_pred')
+    
+    square_error = tf.square(target - pred)
+    square_error = tf.where(cloud_mask > tf_zero, tf.zeros_like(square_error), square_error)
+
+    return tf.reduce_mean(square_error)
 
 def l1_loss(pred, target):
-    return tf.reduce_mean(tf.abs(target - pred))
+    #Unpack the channels 
+    red, green, blue, nir, _, _, _, _, _, _, _, cloud_mask = tf.unstack(target, axis=4, name='unstack_target')
+    pred_red, pred_green, pred_blue, pred_nir, _, _, _, _, _, _, _, _ = tf.unstack(pred, axis=4, name='unstack_pred')
 
+    tf_zero = tf.constant(0, dtype=tf.float32)
+    
+    #Stack channels
+    cloud_mask = tf.stack([cloud_mask, cloud_mask, cloud_mask, cloud_mask], axis=4, name='stack_cloud_mask')
+    target = tf.stack([red, green, blue, nir], axis=4, name='stack_target')
+    pred = tf.stack([pred_red, pred_green, pred_blue, pred_nir], axis=4, name='stack_pred')
+    
+    absolute_error = tf.abs(target - pred)
+    absolute_error = tf.where(cloud_mask > tf_zero, tf.zeros_like(absolute_error), absolute_error)
 
-def l2_loss(pred, target):
-    return tf.reduce_mean(tf.square(target - pred))
+    return tf.reduce_mean(absolute_error)
 
+def l2_NDVI_loss(pred, target):
+    #Unpack the channels 
+    red, _, _, nir, _, _, _, _, _, _, _, cloud_mask = tf.unstack(target, axis=4, name='unstack_target')
+    pred_red, _, _, pred_nir, _, _, _, _, _, _, _, _ = tf.unstack(pred, axis=4, name='unstack_pred')
 
-def normalize_tensor(tensor, eps=1e-10):
-    norm_factor = tf.norm(tensor, axis=-1, keepdims=True)
-    return tensor / (norm_factor + eps)
+    tf_zero = tf.constant(0, dtype=tf.float32)
+    tf_one = tf.constant(1,dtype=tf.float32)
+    tf_epsilon = tf.fill(tf.shape(red), 0.000000001)
+    
+    #compute NDVI
+    target_NDVI = (nir-red)/(nir+red+tf_epsilon)
+    pred_NDVI = (pred_nir-pred_red)/(pred_nir+pred_red+tf_epsilon)
+    
+    #Bound it 0-1 just in case
+    target_NDVI = tf.where(target_NDVI < tf_zero, tf.zeros_like(target_NDVI), target_NDVI)
+    pred_NDVI = tf.where(pred_NDVI < tf_zero, tf.zeros_like(pred_NDVI), pred_NDVI)
+    target_NDVI = tf.where(target_NDVI > tf_one, tf.ones_like(target_NDVI), target_NDVI)
+    pred_NDVI = tf.where(pred_NDVI > tf_one, tf.ones_like(pred_NDVI), pred_NDVI)
+    
+    
+    square_error = tf.square(target_NDVI - pred_NDVI)
+    square_error = tf.where(cloud_mask > tf_zero, tf.zeros_like(square_error), square_error)
+    
+    return tf.reduce_mean(square_error)
 
-
-def cosine_distance(tensor0, tensor1, keep_axis=None):
-    tensor0 = normalize_tensor(tensor0)
-    tensor1 = normalize_tensor(tensor1)
-    return tf.reduce_mean(tf.reduce_sum(tf.square(tensor0 - tensor1), axis=-1)) / 2.0
-                                
+def variability_loss(pred, target):
+    tf_zero = tf.constant(0, dtype=tf.float32)
+    
+    #Unpack the channels
+    pred_red, pred_green, pred_blue, pred_nir, _, _, _, _, _, _, _, _ = tf.unstack(pred, axis=4, name='unstack_pred')
+    red, green, blue, nir, _, _, _, _, _, _, _, cloud_mask = tf.unstack(target, axis=4, name='unstack_target')
+    
+    #Stack channels
+    pred = tf.stack([pred_red, pred_green, pred_blue, pred_nir], axis=4, name='stack_pred')
+    target = tf.stack([red, green, blue, nir], axis=4, name='stack_target')
+    cloud_mask = tf.stack([cloud_mask, cloud_mask, cloud_mask, cloud_mask], axis=4, name='stack_cloud_mask')
+    
+    target = tf.where(cloud_mask > tf_zero, tf.zeros_like(target), target)
+    pred = tf.where(cloud_mask > tf_zero, tf.zeros_like(pred), pred)
+                    
+    samples_norm_stdev = []
+    for sample in tf.unstack(target, axis=1, name='unstack_batch'):
+        mean = tf.reduce_mean(sample)
+        deviations = []
+        for num, frame in enumerate(tf.unstack(sample, axis=0, name='unstack_frames'), start=1):
+            if num == 1:
+                deviations.append(tf.constant(0,dtype=tf.float32))
+            if num > 1:
+                deviations.append(tf.square(tf.reduce_mean(old_frame)-tf.reduce_mean(frame)))
+            old_frame = frame
+            
+        variance = tf.reduce_sum(tf.stack(deviations))/tf.constant(len(tf.unstack(sample, axis=0, name='unstack_frames')),dtype=tf.float32)    
+        target_stdev = tf.sqrt(variance)
+        
+    samples_norm_stdev = []
+    for sample in tf.unstack(pred, axis=1, name='unstack_batch'):
+        mean = tf.reduce_mean(sample)
+        deviations = []
+        for num, frame in enumerate(tf.unstack(sample, axis=0, name='unstack_frames'), start=1):
+            if num == 1:
+                deviations.append(tf.constant(0,dtype=tf.float32))
+            if num > 1:
+                deviations.append(tf.square(tf.reduce_mean(old_frame)-tf.reduce_mean(frame)))
+            old_frame = frame
+            
+        variance = tf.reduce_sum(tf.stack(deviations))/tf.constant(len(tf.unstack(sample, axis=0, name='unstack_frames')),dtype=tf.float32)    
+        stdev = tf.sqrt(variance)
+        
+        ######Only if stdev should go towards a target other than 0
+        #target_stdev = tf.constant(0.002, dtype=tf.float32)
+        stdev = tf.abs(stdev - target_stdev)
+        
+        samples_norm_stdev.append(stdev/mean)
+        
+    return tf.reduce_mean(tf.stack(samples_norm_stdev))
 
 def charbonnier_loss(x, epsilon=0.001):
     return tf.reduce_mean(tf.sqrt(tf.square(x) + tf.square(epsilon)))
@@ -54,14 +145,6 @@ def gan_loss(logits, labels, gan_loss_type):
     return loss
 
 
-def kl_loss(mu, log_sigma_sq, mu2=None, log_sigma2_sq=None):
-    if mu2 is None and log_sigma2_sq is None:
-        sigma_sq = tf.exp(log_sigma_sq)
-        return -0.5 * tf.reduce_mean(tf.reduce_sum(1 + log_sigma_sq - tf.square(mu) - sigma_sq, axis=-1))
-    else:
-        mu1 = mu
-        log_sigma1_sq = log_sigma_sq
-        return tf.reduce_mean(tf.reduce_sum(
-            (log_sigma2_sq - log_sigma1_sq) / 2
-            + (tf.exp(log_sigma1_sq) + tf.square(mu1 - mu2)) / (2 * tf.exp(log_sigma2_sq))
-            - 1 / 2, axis=-1))
+def kl_loss(mu, log_sigma_sq):
+    sigma_sq = tf.exp(log_sigma_sq)
+    return -0.5 * tf.reduce_mean(tf.reduce_sum(1 + log_sigma_sq - tf.square(mu) - sigma_sq, axis=-1))
