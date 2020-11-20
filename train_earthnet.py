@@ -1,9 +1,3 @@
-'''
-Trains video prediction models same as train.py
-Used preferentially to train Arcon and evaluate over the
-Val set using the EarthNet toolkit evaluator.
-'''
-
 from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
@@ -23,7 +17,6 @@ import os
 
 from video_prediction import datasets, models
 from video_prediction.utils import ffmpeg_gif, tf_utils
-from ...evaluation.parallel_score import CubeCalculator
 
 #Disable TF warnings
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
@@ -55,7 +48,6 @@ def main():
     parser.add_argument("--summary_freq", type=int, default=1000, help="save summaries (except for image and eval summaries) every summary_freq steps")
     parser.add_argument("--image_summary_freq", type=int, default=1000, help="save image summaries every image_summary_freq steps")
     parser.add_argument("--eval_summary_freq", type=int, default=0, help="save eval summaries every eval_summary_freq steps")
-    parser.add_argument("--eval_earthnet_freq", type=int, default=1000, help="save eval summaries every eval_summary_freq steps")
     parser.add_argument("--progress_freq", type=int, default=100, help="display progress every progress_freq steps")
     parser.add_argument("--metrics_freq", type=int, default=0, help="run and display metrics every metrics_freq step")
     parser.add_argument("--gif_freq", type=int, default=1000, help="save gifs of predicted frames every gif_freq steps")
@@ -127,8 +119,8 @@ def main():
     VideoDataset = datasets.get_dataset_class(args.dataset)
     train_dataset = VideoDataset(args.input_dir, mode='train', hparams_dict=dataset_hparams_dict, hparams=args.dataset_hparams)
     val_input_dirs = args.val_input_dirs or [args.input_dir]
-    val_datasets = VideoDataset(args.input_dir, mode='val', num_epochs=args.num_epochs, seed=args.seed,
-                           hparams_dict=dataset_hparams_dict, hparams=args.dataset_hparams)
+    val_datasets = [VideoDataset(val_input_dir, mode='val', hparams_dict=dataset_hparams_dict, hparams=args.dataset_hparams)
+                    for val_input_dir in val_input_dirs]
     if len(val_input_dirs) > 1:
         if isinstance(val_datasets[-1], datasets.KTHVideoDataset):
             val_datasets[-1].set_sequence_length(40)
@@ -282,15 +274,6 @@ def main():
                 print("done")
             if should(args.summary_freq) or should(args.image_summary_freq) or should(args.eval_summary_freq):
                 summary_writer.flush()
-            if should(args.eval_eathnet_freq):
-                print("Evaluating validation dataset with EarthNet toolkit")
-                val_model = val_models[0]
-                gen_images = sess.run(model.outputs['gen_images'], feed_dict=feed_dict)
-                ####TODO
-                #### Generate .npz for the validation set
-                #### Evaluate them with CubeCalculator
-                #### Add scores to summaries
-                print("done")
             if should(args.progress_freq):
                 # global_step will have the correct step count if we resume from a checkpoint
                 steps_per_epoch = math.ceil(train_dataset.num_examples_per_epoch() / batch_size)
@@ -302,7 +285,7 @@ def main():
                     average_time = elapsed_time / (step + 1)
                     images_per_sec = batch_size / average_time
                     remaining_time = (max_steps - (start_step + step)) * average_time
-                    print("          multicubes/sec %0.1f  remaining %dm (%0.1fh) (%0.1fd)" %
+                    print("          image/sec %0.1f  remaining %dm (%0.1fh) (%0.1fd)" %
                           (images_per_sec, remaining_time / 60, remaining_time / 60 / 60, remaining_time / 60 / 60 / 24))
 
                 print("Train set losses") 
