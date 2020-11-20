@@ -8,7 +8,7 @@ This work is based on the [Tensorflow implementation of Video Prediction](https:
 
 This repository contains two entry points for training and testing, namely 'train_earthnet.py' and 'generate_earthnet.py'.
 
-This TensorFlow template used old TF 1.15. Are you developing TF 2.0 work? Please contribute your code to the [EarthNet2021 intercomparison toolkit!](https://github.com/earthnet2021/earthnet)
+This TensorFlow template uses old TF 1.15. Are you developing TF 2.0 work for EartNet? Please contribute to the [EarthNet2021 intercomparison toolkit! :)](https://github.com/earthnet2021/earthnet)
 
 # Getting started
 To get started clone the repository or use it as a github template.
