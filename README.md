@@ -2,7 +2,7 @@
 
 This git repository contains the python code for the TensorFlow template of [EarthNet2021](https://github.com/earthnet2021/earthnet). 
 
-This work is based on the [Tensorflow implementation of Video Prediction](https://github.com/alexlee-gk/video_prediction) by [Alex Lee et al. (ArXiv)](https://arxiv.org/abs/1804.01523)
+This work is based on the [Tensorflow implementation of Stochastic Adversarial Video Prediction](https://github.com/alexlee-gk/video_prediction) by [Alex Lee et al. (ArXiv)](https://arxiv.org/abs/1804.01523)
 
 ## Content of the Repository
 
