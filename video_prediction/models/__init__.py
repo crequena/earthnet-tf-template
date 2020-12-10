@@ -4,6 +4,7 @@ from .non_trainable_model import NonTrainableVideoPredictionModel
 from .non_trainable_model import GroundTruthVideoPredictionModel, RepeatVideoPredictionModel
 from .pix2pix_model import Pix2PixVideoPredictionModel
 from .sv2p_model import SV2PVideoPredictionModel
+from .arcon_earthnet import ArconSpatioTemporalForecastingModelEarthNet
 
 
 def get_model_class(model):
@@ -13,6 +14,7 @@ def get_model_class(model):
         'pix2pix': 'Pix2PixVideoPredictionModel',
         'sv2p': 'SV2PVideoPredictionModel',
         'naive': 'NaiveVideoPredictionModel',
+        'arcon_earthnet': 'ArconSpatioTemporalForecastingModelEarthNet',
     }
     model_class = model_mappings.get(model, model)
     model_class = globals().get(model_class)

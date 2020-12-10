@@ -4,7 +4,7 @@
 numpy
 matplotlib
 scipy
-tensorflow-gpu==1.15
+tensorflow-gpu==1.12
 
 #toy dataset requirements
 mnist
